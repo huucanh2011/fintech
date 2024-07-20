@@ -6,12 +6,21 @@ import {
   TouchableOpacity,
   KeyboardAvoidingView,
   Platform,
+  Alert,
 } from "react-native";
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
+import { useRouter } from "expo-router";
+import { Ionicons } from "@expo/vector-icons";
+import {
+  isClerkAPIResponseError,
+  useOAuth,
+  useSignIn,
+} from "@clerk/clerk-expo";
+import * as WebBrowser from "expo-web-browser";
+import * as Linking from "expo-linking";
+
 import { defaultStyles } from "@/constants/Styles";
 import Colors from "@/constants/Colors";
-import { Link } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
 
 enum SignInType {
   Phone,
@@ -20,13 +29,77 @@ enum SignInType {
   Apple,
 }
 
+export const useWarmUpBrowser = () => {
+  useEffect(() => {
+    void WebBrowser.warmUpAsync();
+    return () => {
+      void WebBrowser.coolDownAsync();
+    };
+  }, []);
+};
+
 const Page = () => {
+  useWarmUpBrowser();
+
   const [countryCode, setCountryCode] = useState("+84");
   const [phoneNumber, setPhoneNumber] = useState("");
   const keyboardVerticalOffset = Platform.OS === "ios" ? 80 : 0;
+  const router = useRouter();
+  const { signIn } = useSignIn();
+  const { startOAuthFlow } = useOAuth({ strategy: "oauth_google" });
 
   const onSignIn = async (type: SignInType) => {
     if (type === SignInType.Phone) {
+      try {
+        const fullPhoneNumber = `${countryCode}${phoneNumber}`;
+
+        const { supportedFirstFactors } = await signIn!.create({
+          identifier: fullPhoneNumber,
+        });
+        const firstPhoneFactor: any = supportedFirstFactors.find(
+          (factor: any) => {
+            return factor.strategy === "phone_code";
+          }
+        );
+
+        const { phoneNumberId } = firstPhoneFactor;
+
+        await signIn!.prepareFirstFactor({
+          strategy: "phone_code",
+          phoneNumberId,
+        });
+
+        router.push({
+          pathname: "/verify/[phone]",
+          params: { phone: fullPhoneNumber, signin: "true" },
+        });
+      } catch (err) {
+        console.error("error: ", JSON.stringify(err, null, 2));
+        if (isClerkAPIResponseError(err)) {
+          if (err.errors[0].code === "form_identifier_not_found") {
+            Alert.alert("Error", err.errors[0].message);
+          }
+        }
+      }
+    } else if (type === SignInType.Google) {
+      try {
+        const { createdSessionId, setActive } = await startOAuthFlow({
+          redirectUrl: Linking.createURL("/home", {
+            scheme: "fintech",
+          }),
+        });
+
+        if (createdSessionId) {
+          await setActive!({ session: createdSessionId });
+        }
+      } catch (err) {
+        console.error("error: ", JSON.stringify(err, null, 2));
+        if (isClerkAPIResponseError(err)) {
+          if (err.errors[0].code === "form_identifier_not_found") {
+            Alert.alert("Error", err.errors[0].message);
+          }
+        }
+      }
     }
   };
 
